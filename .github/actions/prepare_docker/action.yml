@@ -1,0 +1,42 @@
+---
+name: Prepare environment for building docker images
+description: Simplify generating tags for building multi-stage docker images
+inputs:
+  aws-access-key-id:
+    description: >-
+      AWS Access Key ID. This input is required if running in the GitHub hosted environment.
+      It is optional if running in a self-hosted environment that already has AWS credentials,
+      for example on an EC2 instance.
+    required: false
+  aws-secret-access-key:
+    description: >-
+      AWS Secret Access Key. This input is required if running in the GitHub hosted environment.
+      It is optional if running in a self-hosted environment that already has AWS credentials,
+      for example on an EC2 instance.
+    required: false
+  aws-region:
+    description: 'AWS Region, e.g. us-east-2'
+    required: true      
+  ssh-private-key:
+      description: 'Private SSH key to register in the SSH agent'
+      required: false
+runs:
+  using: composite
+  steps:        
+    - id: install_buildx
+      uses: docker/setup-buildx-action@v2
+      with:
+        install: true    
+    - id: setup_ssh
+      if: inputs.ssh-private-key != ''
+      uses: webfactory/ssh-agent@836c84ec59a0e7bc0eabc79988384eb567561ee2
+      with:
+        ssh-private-key: ${{ inputs.ssh-private-key }}    
+    - id: configure_aws_credentials
+      uses: aws-actions/configure-aws-credentials@v1-node16
+      with:
+        aws-access-key-id: ${{ inputs.aws-access-key-id }}
+        aws-secret-access-key: ${{ inputs.aws-secret-access-key }}
+        aws-region: ${{ inputs.aws-region }}
+    - id: login_to_aws_ecr
+      uses: aws-actions/amazon-ecr-login@v1    

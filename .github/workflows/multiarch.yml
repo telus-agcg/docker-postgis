@@ -1,0 +1,143 @@
+name: PostGIS MultiArch Images
+
+on:
+  push:
+
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build_settings:
+    name: Build settings
+    runs-on: ubuntu-latest
+    steps:
+    - name: Runners
+      id: runners
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const runs_on = {
+            amd64: ["ubuntu-latest"],
+            arm64: ["self-hosted", "linux", "arm64"]
+          };
+          const architectures = ["amd64", "arm64"];
+
+          const result = architectures.map(arch => (
+            {
+              runs_on: runs_on[arch],
+              platform: `linux/${arch}`,
+              arch: arch
+            }
+          ));
+
+          return result;
+    outputs:
+      runners: ${{ steps.runners.outputs.result }}
+
+
+  make-docker-images:
+    needs: build_settings
+    strategy:
+      matrix:
+        runners: ${{ fromJSON(needs.build_settings.outputs.runners) }}
+        postgres: [11, 12, 13, 14, 15]
+        postgis: ['3.3']
+        variant: [default, alpine]
+
+    name: Build image ${{ matrix.postgres }}-${{ matrix.postgis }}-${{ matrix.variant }}-${{matrix.runners.arch}}
+      #runs-on: ${{ matrix.runners.runs_on }}
+    runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.postgis == 'master' }}
+    env:
+      VERSION: ${{ matrix.postgres }}-${{ matrix.postgis }}
+      REPO_NAME: 015482213111.dkr.ecr.us-west-1.amazonaws.com/postgis
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+
+    - name: Generate tag
+      id: generate_tag
+      run: |
+        if [ "${{matrix.variant}}" == "alpine" ]; then
+          VARIANT_SUFFIX="-alpine"
+          VARIANT_PATH="/alpine"
+        else  
+          VARIANT_SUFFIX=""
+          VARIANT_PATH=""
+        fi
+        echo "image_tag=${{env.REPO_NAME}}:postgis-${{env.VERSION}}$VARIANT_SUFFIX-${{matrix.runners.arch}}" | tee -a $GITHUB_OUTPUT
+        echo "dockerfile=./${{env.VERSION}}${VARIANT_PATH}/Dockerfile" | tee -a $GITHUB_OUTPUT
+
+    - uses: ./.github/actions/prepare_docker
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-1         
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2  
+    - name: Build Image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ${{ steps.generate_tag.outputs.dockerfile }}
+        push: true
+        tags: ${{ steps.generate_tag.outputs.image_tag }}
+        cache-from: ${{ steps.generate_tag.outputs.image_tag }}
+        cache-to: type=inline
+        platforms: ${{ matrix.runners.platform }}
+
+  merge-docker-images:
+    needs: 
+      - build_settings
+      - make-docker-images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        postgres: [11, 12, 13, 14, 15]
+        postgis: ['3.3']
+        variant: [default, alpine]
+
+    env:
+      VERSION: ${{ matrix.postgres }}-${{ matrix.postgis }}
+      REPO_NAME: 015482213111.dkr.ecr.us-west-1.amazonaws.com/postgis
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v3
+    - uses: ./.github/actions/prepare_docker
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: us-west-1         
+
+    - name: Generate tag
+      id: generate_tag
+      run: |
+        if [ "${{matrix.variant}}" == "alpine" ]; then
+          VARIANT_SUFFIX="-alpine"
+          VARIANT_PATH="/alpine"
+        else  
+          VARIANT_SUFFIX=""
+          VARIANT_PATH=""
+        fi
+        echo "image_tag=${{env.REPO_NAME}}:postgis-${{env.VERSION}}$VARIANT_SUFFIX" | tee -a $GITHUB_OUTPUT
+        echo "arm64_image_tag=${{env.REPO_NAME}}:postgis-${{env.VERSION}}$VARIANT_SUFFIX-arm64" | tee -a $GITHUB_OUTPUT
+        echo "amd64_image_tag=${{env.REPO_NAME}}:postgis-${{env.VERSION}}$VARIANT_SUFFIX-amd64" | tee -a $GITHUB_OUTPUT
+        echo "dockerfile=./${{env.VERSION}}${VARIANT_PATH}/Dockerfile" | tee -a $GITHUB_OUTPUT
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v2  
+    - name: Build Image
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ${{ steps.generate_tag.outputs.dockerfile }}
+        push: true
+        tags: ${{ steps.generate_tag.outputs.image_tag }}
+        cache-from: |
+          ${{ steps.generate_tag.outputs.arm64_image_tag }}
+          ${{ steps.generate_tag.outputs.amd64_image_tag }}
+        cache-to: type=inline
+        platforms: linux/amd64,linux/arm64 
